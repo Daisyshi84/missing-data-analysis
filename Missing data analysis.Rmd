@@ -1,0 +1,197 @@
+---
+title: "impute missing data"
+author: "Daisy"
+date: "6/21/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(tidyverse)
+library(ggplot2)
+library(GGally)
+theme_set(theme_bw())
+library(magrittr)
+library(tidyverse)
+library(scales)
+library(ggiraph)
+library(ggiraphExtra)
+library(plotly)
+ 
+knitr::opts_chunk$set(cache = TRUE,warning = FALSE, 
+                      message = FALSE,echo = TRUE, dpi = 180,
+                      fig.width = 8, fig.height = 5)
+
+african_names <- readr::read_csv("https://raw.githubusercontent.com/rfordatascience/tidytuesday/master/data/2020/2020-06-16/african_names.csv")
+
+#skimr::skim(african_names)
+summary(african_names)
+
+african_names %>%
+  count(port_disembark, sort = TRUE)
+
+african_names %>%
+  count(port_embark, sort = TRUE)
+
+summary(african_names$year_arrival)
+```
+
+
+```{r}
+#What is the pattern of missing data?
+
+library(naniar)
+
+african_names %>% 
+  dplyr::select(gender, age, height, year_arrival) %>%
+  gg_miss_upset()
+
+```
+
+```{r}
+
+#When is this data from?
+
+y<- african_names %>%
+  count(year_arrival,sort = TRUE)
+
+ggplot(y,aes(year_arrival,n,color=year_arrival))+ geom_bar_interactive(stat='identity')+
+  scale_x_continuous(breaks = c(1810,1820,1830,1840,1840,1850,1860))
+
+
+
+
+african_names %>%
+  ggplot(aes(year_arrival)) + geom_histogram(bins=20,alpha=0.7,fill = "midnightblue") +
+  labs(title="Distribution of year arrival",y="Number of liberated individuals")+
+  theme(text = element_text(size=25),
+        axis.text.x = element_text(angle=360, hjust=2))  +
+  scale_y_continuous(labels = scales::comma_format()) 
+
+
+
+
+#plot(density(african_names$year_arrival),line ="red")
+```
+
+```{r}
+african_names %>%
+  filter(year_arrival<1850) %>%
+  group_by(year_arrival) %>%
+  summarise(age= mean(age,na.rm =TRUE)) %>%
+  ggplot(aes(year_arrival,age))+geom_line(size=1.5,alpha=0.7) +
+  geom_smooth(method="lm")+ 
+  labs(title = "linear regression to analysis age vs. year arrival")+ 
+  theme(text = element_text(size=25)) +
+  scale_y_continuous(limits = c(0,NA))
+```
+```{r}
+african_names %>%
+  ggplot(aes(gender,year_arrival,fill=gender)) +
+  geom_boxplot(alpha=0.3, show.legend = FALSE) +
+  theme(text = element_text(size=25)) +
+  labs(x=NULL,y="Year")
+
+#aphoa=transparancy
+```
+```{r}
+#Gender was coded as both man/woman and boy/girl, but 3there is a fair amount of overlap in ages (children 
+#coded as “man”, for example).
+
+african_names %>%
+  ggplot(aes(gender, age, fill = gender)) +
+  geom_boxplot(alpha = 0.4, show.legend = FALSE) +theme(text = element_text(size=25)) +
+  labs(x = NULL, y = "Age")
+```
+
+```{r}
+library(ggrepel) #for text in the polts
+ 
+
+african_names %>%
+  group_by(name) %>%
+  summarise(
+    n = n(),
+    age = mean(age, na.rm = TRUE),
+    year_arrival = mean(year_arrival, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  arrange(-n) %>%
+  filter(n > 50) %>%
+  ggplot(aes(year_arrival, age)) +
+  geom_text_repel(aes(label = name), size = 5) +
+  geom_point(aes(size = n), color = "midnightblue", alpha = 0.7) +
+  theme(text = element_text(size=25)) +
+  labs(
+    x = "Mean year of arrival", y = "Mean age",
+    size = "Number of people",
+    title = "Age and year of arrival for most common names of transported captives",
+    caption = "African Names Database from slavevoyages.org"
+  )
+  
+```
+Impute missing data
+
+Our modeling goal is to estimate whether some characteristics, say age and gender, of trafficked Africans changed during this time period. Some data is missing, so let’s try to impute gender and age, with the help of height. When we do imputation, we aren’t adding new information to our dataset, but we are using the patterns in our dataset so that we don’t have to throw away the data that have some variables missing.
+
+First, let’s filter to only the data from before 1850 and recode the gender variable.
+```{r}
+
+liberated_df <- african_names %>%
+  filter(year_arrival < 1850) %>%
+  mutate(gender = case_when(
+    gender == "Boy" ~ "Man",
+    gender == "Girl" ~ "Woman",
+    TRUE ~ gender
+  )) %>%
+  mutate_if(is.character, factor)
+
+
+```
+#Next, let’s impute the missing data using a recipe.
+
+Let’s walk through the steps in this recipe.
+
+First, we must tell the recipe() what’s going on with our model what data we are using (notice we did not split into training and testing, because of our specific modeling goals).
+Next, we impute the missing values for height with the mean value for height. Height has a low value of missingness, and we are only going to use it to impute age and gender, not for modeling.
+Next, we impute the missing values for age and gender using a nearest neighbors model with all three predictors.
+
+Once we have the recipe defined, we can estimate the parameters needed to apply it using prep(). In this case, that means finding the mean for height (fast) and training the nearest neighbor model to find gender and age (not so fast). Then we can use juice() to get that imputed data back out. (If we wanted to apply the recipe to other data, like new data we hadn’t seen before,
+we would use bake() instead.
+```{r}
+
+library(recipes)
+
+impute_rec <- recipe(year_arrival ~ gender + age + height, data = liberated_df) %>%
+  step_meanimpute(height) %>%
+  step_knnimpute(all_predictors())
+
+imputed <- prep(impute_rec) %>% juice()
+
+
+imputed %>%
+  summary()
+
+
+```
+#No more NA values, and the distributions look about the same. 
+I like to keep in mind that the point of imputation like this is to be able to use the information we have in the dataset without throwing it away, which feels especially important when dealing with historical data on individuals who experienced enslavement.
+
+# Fit a model
+The distribution of year of arrival was a bit wonky, so that is good to keep in mind when training a linear model.
+
+During the years (about 1810 to 1850) included here, as time passed, there were some gradual shifts in the population of who was found on (i.e. liberated from) these slave ships.
+
+There is *evidence* for a modest shift to younger ages as time passed. (The plot showing increasing age with time was, it turns out,an example of Simpson’s paradox.)
+In the earlier years, there were more proportionally more women while in the later years, there were proportionally more men.
+
+```{r}
+fit_lm <- lm(year_arrival ~ gender + age, data = imputed)
+summary(fit_lm)
+
+tidy(fit_lm) %>%
+  kable(digits = 5)
+
+```
+
+
